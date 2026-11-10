@@ -8,8 +8,9 @@ What has actually been done so far, so you know what is proven:
 | Step | Status |
 |---|---|
 | Native build, tests, clippy on x86_64 Linux | done, passing |
-| Cross-compile to ARMv6 | done; the binary was inspected but **never run** |
-| Deploying to the Pi | **not done** (no access to the Pi) |
+| Cross-compile to ARMv6 (`arm-unknown-linux-gnueabihf`) | done; the binary was inspected (ARMv6, hard-float, glibc ≤ 2.28) but **never run**, because this machine has no ARM glibc |
+| Static ARMv6 build of the same code (`--static`) | done, and **run under emulation** on an ARM1176 (the Zero's CPU model): all tests pass and the daemon registered its BLE service with BlueZ |
+| Anything on a real Pi | **not done** (no access to the Pi) |
 | Building the phone app | **not done** (no Flutter SDK installed) |
 
 ## 1. On your computer (x86_64 Linux)
@@ -101,6 +102,31 @@ ELF 32-bit LSB pie executable, ARM, EABI5 ..., interpreter /lib/ld-linux-armhf.s
 `v6` is the important line. It depends only on glibc 2.28 or newer, so it
 suits Raspberry Pi OS (32-bit) from Buster onwards. The Zero W cannot run
 64-bit Raspberry Pi OS.
+
+### The static variant
+
+```sh
+rustup target add arm-unknown-linux-musleabihf     # once
+./scripts/build-pi.sh --static
+```
+
+This produces `target/arm-unknown-linux-musleabihf/release/pi-alarm`: the
+same program, still ARMv6 hard-float, with the C library (musl) compiled in.
+It depends on nothing installed on the Pi.
+
+Use the normal build first, as planned. Reach for the static one if the
+normal binary will not start on your Pi (for example an error mentioning
+`GLIBC_...` or `ld-linux-armhf`). It is also the only variant that could be
+executed here: with `qemu-arm-static -cpu arm1176`, which emulates the
+Zero's processor and stops on any instruction that processor lacks.
+
+To repeat that test (needs `qemu-arm-static`, which was already installed on
+this machine):
+
+```sh
+qemu-arm-static -cpu arm1176 \
+    target/arm-unknown-linux-musleabihf/release/pi-alarm inspect flipper_files/3_fan.sub
+```
 
 ### If Zig does not work for you
 

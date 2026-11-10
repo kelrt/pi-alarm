@@ -49,12 +49,15 @@ impl Clock for SystemClock {
     }
 
     fn set(&self, time: DateTime<Utc>) -> anyhow::Result<()> {
-        // The field types differ between 64-bit PCs and the 32-bit Pi, so we
-        // convert with `as` to whatever this platform uses.
-        let spec = libc::timespec {
-            tv_sec: time.timestamp() as libc::time_t,
-            tv_nsec: time.timestamp_subsec_nanos() as libc::c_long,
-        };
+        // The exact layout and integer types of `timespec` differ between
+        // 64-bit PCs, the 32-bit Pi and different C libraries. So: start
+        // from all zeros and assign the two fields, letting `as _` convert
+        // to whatever type each field has on this platform.
+        // SAFETY: `timespec` is a plain C struct of integers, for which
+        // all-zero bytes is a valid value.
+        let mut spec: libc::timespec = unsafe { std::mem::zeroed() };
+        spec.tv_sec = time.timestamp() as _;
+        spec.tv_nsec = time.timestamp_subsec_nanos() as _;
         // SAFETY: `clock_settime` only reads the struct we pass a pointer to.
         let result = unsafe { libc::clock_settime(libc::CLOCK_REALTIME, &spec) };
         if result != 0 {

@@ -545,12 +545,24 @@ struct RealtimePriority {
     enabled: bool,
 }
 
+/// Build the C struct `sched_setscheduler` wants.
+///
+/// The struct has extra fields on some C libraries (musl), so instead of
+/// naming every field we start from all zeros and set the one we need.
+fn sched_param(priority: libc::c_int) -> libc::sched_param {
+    // SAFETY: `sched_param` is a plain C struct of integers, for which
+    // all-zero bytes is a valid value.
+    let mut param: libc::sched_param = unsafe { std::mem::zeroed() };
+    param.sched_priority = priority;
+    param
+}
+
 /// Remembers that we already warned about missing real-time priority.
 static WARNED_NO_REALTIME: AtomicBool = AtomicBool::new(false);
 
 impl RealtimePriority {
     fn try_enable() -> RealtimePriority {
-        let param = libc::sched_param { sched_priority: 50 };
+        let param = sched_param(50);
         // SAFETY: `sched_setscheduler` only reads the struct we pass. Pid 0
         // means "the calling thread".
         let result = unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) };
@@ -572,7 +584,7 @@ impl RealtimePriority {
 impl Drop for RealtimePriority {
     fn drop(&mut self) {
         if self.enabled {
-            let param = libc::sched_param { sched_priority: 0 };
+            let param = sched_param(0);
             // SAFETY: as above.
             unsafe { libc::sched_setscheduler(0, libc::SCHED_OTHER, &param) };
         }

@@ -233,3 +233,20 @@ Found by rereading the code that cannot run until the hardware exists:
 - The daemon noticed alarm-file changes by modification time alone, which
   can be the same for two saves a few milliseconds apart. It now also
   compares the file's length and inode number.
+
+### D34. A second, static ARM build exists so the ARM code could be executed
+The build you asked for (`arm-unknown-linux-gnueabihf`) links against the
+Pi's glibc, which this machine does not have, so that binary could only be
+inspected. `qemu-arm-static` was already installed here, so I also built the
+same code for `arm-unknown-linux-musleabihf` (ARMv6, statically linked) and
+ran it with `-cpu arm1176`: the whole test suite passes, and the daemon
+registered its BLE service with this machine's BlueZ. That required a second
+`rustup target add` (under `~/.rustup`, like D29). It also made me fix two
+places where the code assumed glibc's struct layouts.
+
+The gnueabihf build stays the documented default; `./scripts/build-pi.sh
+--static` is the fallback.
+
+### D35. One-shot CLI commands exit quietly when their output pipe closes
+`pi-alarm next | head` no longer ends in a panic message. The daemon keeps
+Rust's default of ignoring SIGPIPE.

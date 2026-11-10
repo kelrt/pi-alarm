@@ -135,6 +135,17 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
+    // Rust programs ignore the SIGPIPE signal, so `pi-alarm next | head`
+    // would end with an ugly "failed printing to stdout" panic when `head`
+    // closes the pipe. For the one-shot commands, restore the usual Unix
+    // behaviour of quietly exiting. The daemon keeps Rust's default: it must
+    // not die because some socket it writes to was closed.
+    if !matches!(cli.command, Command::Run) {
+        // SAFETY: `signal` with SIG_DFL only resets how this process reacts
+        // to a signal. Nothing else is running yet.
+        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+    }
+
     // Log level: info by default, debug with --verbose. The RUST_LOG
     // environment variable still overrides this.
     let default_level = if cli.verbose { "debug" } else { "info" };
