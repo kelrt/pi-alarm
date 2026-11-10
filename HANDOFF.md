@@ -93,21 +93,27 @@ All 35 are in [DECISIONS.md](DECISIONS.md). The ones most worth your eye:
 
 1. **Does replaying the captures from the Flipper work** from where the Pi
    will sit? (HARDWARE.md step 1. Everything else assumes yes.)
+        - answer: 
 2. **Which CC1101 module do you have**, one sold for 433 MHz or for 315 MHz?
    A 433 MHz board works at 304 MHz with reduced range and needs a 23.5 cm
    wire antenna instead of its coil.
+        - answer: 
 3. **What time zone should alarms use?** The daemon uses the Pi's system
    zone unless you set `timezone` in the config. This PC is on
    America/New_York; I did not assume the Pi is.
+        - answer: 
 4. **Is "no BLE pairing" acceptable for now?** Anyone in Bluetooth range who
    knew the protocol could toggle your light. Say the word and bonding is
    the next change.
+        - answer: 
 5. **After a power cut with no Wi-Fi and no phone**, the Pi's clock is
    stale, so alarms fire late by however far it is behind. Would you prefer
    that (current), or no alarm at all until the clock is confirmed?
+        - answer: 
 6. **Do you want one-shot ("tomorrow only") alarms?** Left out because the
    brief described alarms as time + days of week. It is exercise 4 in
    LEARNING.md if you want to build it.
+        - answer: 
 
 ## Next steps, in order
 
