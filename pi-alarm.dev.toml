@@ -1,0 +1,27 @@
+# Config for trying things out on a development machine (no radio needed):
+#
+#   cargo run -- --config pi-alarm.dev.toml check
+#   cargo run -- --config pi-alarm.dev.toml send fan_3
+#
+# It uses the mock transmitter, the captures in flipper_files/ and keeps its
+# data in ./local-data (git-ignored).
+
+data_dir = "local-data"
+
+[radio]
+transmitter = "mock"
+
+[ble]
+enabled = false
+
+[actions.fan_off]
+file = "flipper_files/0_fan.sub"
+label = "Fan off"
+
+[actions.fan_3]
+file = "flipper_files/3_fan.sub"
+label = "Fan 3"
+
+[actions.light_toggle]
+file = "flipper_files/Lite.sub"
+label = "Light"

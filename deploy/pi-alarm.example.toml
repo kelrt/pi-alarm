@@ -1,0 +1,62 @@
+# pi-alarm configuration.
+#
+# On the Pi this file lives at /etc/pi-alarm/pi-alarm.toml.
+# Relative paths below start at the directory this file is in.
+# Check it after every edit with:   pi-alarm check
+
+# Where alarms.json and the scheduler's state are kept.
+data_dir = "/var/lib/pi-alarm"
+
+# Alarm times are in the Pi's system time zone (`timedatectl` shows it).
+# To use a different one, uncomment and set an IANA name:
+# timezone = "America/Chicago"
+
+[radio]
+# "cc1101" = the real transmitter. "mock" = only log what would be sent.
+transmitter = "cc1101"
+# How many times each frame is sent. The real remote repeats while the
+# button is held; 8 is about 0.3 s on air.
+repeats = 8
+
+[radio.cc1101]
+spi_bus = 0            # SPI0, the pins on the 40-pin header
+spi_chip_select = 0    # CE0 (physical pin 24)
+spi_clock_hz = 500000
+gdo0_gpio = 25         # BCM numbering: GPIO25 is physical pin 22
+crystal_hz = 26000000  # printed on the module's crystal can ("26.000")
+pa_power = 0xC0        # 0xC0 = maximum. Lower: 0x50, 0x37, 0x26, ...
+
+[ble]
+enabled = true
+device_name = "pi-alarm"   # what the phone sees
+
+[scheduler]
+# A step that is this many seconds late (daemon restarted, clock corrected)
+# still runs. Anything older is skipped.
+late_grace_secs = 300
+
+# ---------------------------------------------------------------------------
+# Actions: a name, and the Flipper capture to replay for it.
+#
+# To add one (say fan speed 1): capture it on the Flipper with "Read RAW",
+# copy the .sub file next to the others, add a block like these, then run
+# `pi-alarm check` and restart the service. No code changes.
+#
+# Optional keys per action:
+#   label   = "..."   text for the button in the phone app
+#   repeats = 12      override [radio] repeats
+#   mode    = "raw"   replay the whole capture verbatim instead of the
+#                     clean repeating frame (only for odd remotes)
+# ---------------------------------------------------------------------------
+
+[actions.fan_off]
+file = "signals/0_fan.sub"
+label = "Fan off"
+
+[actions.fan_3]
+file = "signals/3_fan.sub"
+label = "Fan 3"
+
+[actions.light_toggle]
+file = "signals/Lite.sub"
+label = "Light"
