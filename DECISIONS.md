@@ -125,3 +125,84 @@ late seemed better for a wake-up alarm. The status message reports
 place, so a power cut cannot leave half a file. A lock file stops the daemon
 and the CLI from overwriting each other's changes. A damaged file is reported
 as an error and never overwritten.
+
+## Protocol, BLE and service
+
+### D19. JSON messages with a one-byte chunk header
+JSON is easy to read in a BLE debugging app and trivial in Dart. A BLE write
+or notification can be as small as 20 bytes, so every message is cut into
+chunks with a one-byte header (first/last flags). See PROTOCOL.md.
+
+### D20. Request/response over two characteristics
+The phone writes request chunks to one characteristic and receives response
+chunks as notifications on another. Every request gets exactly one response,
+matched by an `id` the phone chooses.
+
+### D21. The phone's time always wins when the difference is 2 s or more
+`set_time` sets the system clock if it differs from the phone by at least
+2 seconds, in either direction, even if NTP has synchronised the Pi. Simple
+and predictable; the phone's clock is network-synchronised too. Smaller
+differences are left alone.
+
+### D22. No BLE pairing or encryption yet (please read)
+Anyone within Bluetooth range who knows the protocol could trigger an action
+or edit alarms. For a fan and a light in a bedroom I judged that acceptable
+for a first version, and BLE bonding between Android and BlueZ is a common
+source of connection trouble that I could not test here. "Remember the Pi"
+is done in the app by storing the Pi's Bluetooth address. Adding bonding
+later is a contained change (`encrypt_authenticated_write` flags in
+`src/ble.rs` plus a pairing agent). This is one of the questions in
+HANDOFF.md.
+
+### D23. The time zone is the Pi's, checked against the phone
+Alarm times are wall-clock times in the daemon's zone (config `timezone`, or
+the system zone). The phone sends its UTC offset with `set_time`; the Pi
+answers whether its own offset matches (`tz_match`) and the app shows a
+warning if not. I did not let the phone *set* the Pi's zone: a bare offset
+is not enough to handle daylight saving, and sending a zone name would need
+another Flutter plugin.
+
+### D24. The CLI works directly on the files, not through the daemon
+`pi-alarm send`, `list`, `add`, ... do not need the daemon to be running,
+which matters for the very first wiring test. The daemon notices changes to
+`alarms.json` within a second. Lock files keep the two from clashing over
+the store or the radio. `pi-alarm request '<json>'` runs one protocol
+request through the same handler the phone uses.
+
+### D25. The daemon keeps scheduling when Bluetooth is unavailable
+BLE start-up errors are logged and retried every 10 seconds. A missing or
+broken CC1101, on the other hand, stops the daemon at start-up with a clear
+error, because an alarm clock that cannot transmit is not worth running
+silently. Use `--mock-radio` or `transmitter = "mock"` to run without one.
+
+### D26. systemd: root with almost everything taken away
+The service needs SPI, GPIO, BlueZ over D-Bus, clock setting and real-time
+priority. Rather than a dedicated user plus four separate permission setups
+(each a way to fail that I cannot test without the Pi), it runs as root with
+only CAP_SYS_TIME and CAP_SYS_NICE left and a read-only filesystem apart
+from `/var/lib/pi-alarm`.
+
+### D27. Scheduler state is saved before transmitting
+If the daemon dies in the 0.3 s between deciding to run a step and finishing
+the transmission, the step is lost rather than repeated on restart. A lost
+`fan_3` is bad; a repeated `light_toggle` turns the light back off, and a
+crash that repeats on every restart would spam the radio.
+
+## Build and tooling
+
+### D28. libdbus is compiled from source into the binary
+`bluer` needs libdbus. The dev machine has no dbus headers and the brief
+forbids installing packages, so the `vendored-dbus` cargo feature (on by
+default) builds it from source. This also makes cross-compiling simpler: no
+ARM copy of libdbus is needed.
+
+### D29. Cross-compiling uses Zig, installed inside the project
+No ARM cross-compiler is installed. `cargo-zigbuild` and Zig were installed
+with pip into `.tools/venv` (git-ignored, inside the project). The one thing
+outside the project directory is the Rust target itself:
+`rustup target add arm-unknown-linux-gnueabihf` added files under
+`~/.rustup`. I judged that to be part of "try the ARMv6 cross-compile"; undo
+it with `rustup target remove arm-unknown-linux-gnueabihf`.
+
+### D30. The alarm delete command is `pi-alarm delete`, not `rm`
+Matches the protocol's `delete` op.

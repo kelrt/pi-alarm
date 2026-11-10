@@ -1,0 +1,42 @@
+# systemd unit for the pi-alarm daemon.
+#
+# Install on the Pi (see BUILD.md for the full steps):
+#   sudo cp pi-alarm.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pi-alarm
+#
+# Logs:   journalctl -u pi-alarm -f
+
+[Unit]
+Description=pi-alarm: fan/light wake-up alarm (CC1101 radio + BLE)
+# Start after Bluetooth if it is there. The daemon keeps retrying BLE on its
+# own, so alarms work even when Bluetooth is down.
+After=bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pi-alarm --config /etc/pi-alarm/pi-alarm.toml run
+Restart=always
+RestartSec=3
+
+# Runs as root because it needs four privileged things at once: the SPI and
+# GPIO devices, BlueZ over D-Bus, setting the clock, and real-time priority.
+# The lines below take away everything else root could normally do.
+
+# Of all root's powers keep only: set the clock, and raise thread priority.
+CapabilityBoundingSet=CAP_SYS_TIME CAP_SYS_NICE
+NoNewPrivileges=true
+
+# The whole filesystem is read-only for the daemon, except its own state
+# directory /var/lib/pi-alarm (created automatically by StateDirectory).
+ProtectSystem=strict
+StateDirectory=pi-alarm
+ProtectHome=true
+PrivateTmp=true
+
+# Log level: error, warn, info (default), debug.
+# Environment=RUST_LOG=debug
+
+[Install]
+WantedBy=multi-user.target

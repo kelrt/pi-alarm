@@ -22,6 +22,7 @@
 //! * `Cc1101` is the driver. It only talks to a `Cc1101Io`, so the tests at
 //!   the bottom can run it against a simulated chip on any computer.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -536,6 +537,9 @@ struct RealtimePriority {
     enabled: bool,
 }
 
+/// Remembers that we already warned about missing real-time priority.
+static WARNED_NO_REALTIME: AtomicBool = AtomicBool::new(false);
+
 impl RealtimePriority {
     fn try_enable() -> RealtimePriority {
         let param = libc::sched_param { sched_priority: 50 };
@@ -543,9 +547,12 @@ impl RealtimePriority {
         // means "the calling thread".
         let result = unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) };
         let enabled = result == 0;
-        if !enabled {
-            log::debug!(
-                "real-time priority not available ({}); timing may jitter",
+        // `swap` sets the flag and returns its old value, so the warning is
+        // printed only the first time.
+        if !enabled && !WARNED_NO_REALTIME.swap(true, Ordering::Relaxed) {
+            log::warn!(
+                "real-time priority not available ({}); pulse timing may \
+                 jitter. The systemd unit grants it (CAP_SYS_NICE)",
                 std::io::Error::last_os_error()
             );
         }
