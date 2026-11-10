@@ -133,7 +133,7 @@ async fn serve(app: Arc<App>, device_name: &str) -> anyhow::Result<()> {
             .context("cannot watch for Bluetooth adapter changes")?,
     );
 
-    let mut reassembler = Reassembler::new();
+    let mut conversation = Conversation::new(app);
     // The current subscription, if the phone has one.
     let mut notifier: Option<CharacteristicNotifier> = None;
 
@@ -163,49 +163,84 @@ async fn serve(app: Arc<App>, device_name: &str) -> anyhow::Result<()> {
             BleEvent::Subscribed(new_notifier) => {
                 log::info!("phone subscribed to responses");
                 // A new subscription means a new connection: drop leftovers.
-                reassembler.reset();
+                conversation.reset();
                 notifier = Some(new_notifier);
             }
             BleEvent::Chunk { data, mtu } => {
-                let message = match reassembler.push(&data) {
-                    Ok(Some(message)) => message,
-                    Ok(None) => continue, // need more chunks
-                    Err(error) => {
-                        log::warn!("bad chunk from the phone: {error}");
-                        continue;
-                    }
-                };
-
-                // Handling a request may transmit (about 0.3 s of blocking,
-                // precisely timed work), so it runs on a separate thread and
-                // we wait for the result without blocking Bluetooth.
-                let app_for_task = Arc::clone(&app);
-                let response =
-                    tokio::task::spawn_blocking(move || handle_request(&app_for_task, &message))
-                        .await
-                        .context("request handler crashed")?;
-
-                send_response(&mut notifier, &response, mtu).await;
+                let response_chunks = conversation.on_chunk(&data, mtu).await?;
+                send_chunks(&mut notifier, response_chunks).await;
             }
         }
     }
 }
 
-/// Send a response to the phone as one or more notifications.
-async fn send_response(notifier: &mut Option<CharacteristicNotifier>, response: &[u8], mtu: u16) {
+/// The part of the server that has nothing to do with Bluetooth: request
+/// chunks go in, response chunks come out. It is separate from `serve` so
+/// that it can be tested without BlueZ.
+struct Conversation {
+    app: Arc<App>,
+    reassembler: Reassembler,
+}
+
+impl Conversation {
+    fn new(app: Arc<App>) -> Conversation {
+        Conversation {
+            app,
+            reassembler: Reassembler::new(),
+        }
+    }
+
+    /// Forget a half-received request (the phone reconnected).
+    fn reset(&mut self) {
+        self.reassembler.reset();
+    }
+
+    /// Take one chunk the phone wrote. If it completes a request, handle the
+    /// request and return the response as chunks sized for `mtu`. Otherwise
+    /// return an empty list: more chunks are needed, or the chunk was bad.
+    async fn on_chunk(&mut self, data: &[u8], mtu: u16) -> anyhow::Result<Vec<Vec<u8>>> {
+        let message = match self.reassembler.push(data) {
+            Ok(Some(message)) => message,
+            Ok(None) => return Ok(Vec::new()),
+            Err(error) => {
+                log::warn!("bad chunk from the phone: {error}");
+                return Ok(Vec::new());
+            }
+        };
+
+        // Handling a request may transmit (about 0.3 s of blocking,
+        // precisely timed work), so it runs on a separate thread and we wait
+        // for the result without blocking Bluetooth.
+        let app = Arc::clone(&self.app);
+        let response = tokio::task::spawn_blocking(move || handle_request(&app, &message))
+            .await
+            .context("request handler crashed")?;
+
+        Ok(chunk_message(&response, response_chunk_len(mtu)))
+    }
+}
+
+/// How large a response chunk may be on a connection with this MTU.
+///
+/// The MTU is the packet size the phone and the Pi agreed on; BlueZ reports
+/// it with every write. A notification can carry MTU - 3 bytes.
+fn response_chunk_len(mtu: u16) -> usize {
+    usize::from(mtu)
+        .saturating_sub(3)
+        .clamp(MIN_CHUNK_LEN, MAX_CHUNK_LEN)
+}
+
+/// Send response chunks to the phone, one notification each.
+async fn send_chunks(notifier: &mut Option<CharacteristicNotifier>, chunks: Vec<Vec<u8>>) {
+    if chunks.is_empty() {
+        return;
+    }
     // `as_mut` lets us borrow the notifier inside the Option mutably.
     let Some(active) = notifier.as_mut() else {
         log::warn!("request handled, but the phone is not subscribed to responses");
         return;
     };
-
-    // A notification can carry MTU - 3 bytes. The MTU is the packet size
-    // the phone and the Pi agreed on; BlueZ tells us with every write.
-    let chunk_len = usize::from(mtu)
-        .saturating_sub(3)
-        .clamp(MIN_CHUNK_LEN, MAX_CHUNK_LEN);
-
-    for chunk in chunk_message(response, chunk_len) {
+    for chunk in chunks {
         if let Err(error) = active.notify(chunk).await {
             log::warn!("could not notify the phone (disconnected?): {error}");
             // Forget the dead subscription; a reconnect brings a new one.
@@ -241,20 +276,8 @@ fn build_application(events: mpsc::Sender<BleEvent>) -> Application {
             write: true,
             method: CharacteristicWriteMethod::Fun(Box::new(move |data, request| {
                 let events = write_events.clone();
-                async move {
-                    // We do our own chunking, so BLE "long writes" (which
-                    // arrive with an offset) are not supported.
-                    if request.offset != 0 {
-                        return Err(ReqError::InvalidOffset);
-                    }
-                    let event = BleEvent::Chunk {
-                        data,
-                        mtu: request.mtu,
-                    };
-                    // Fails only if the main loop has gone away.
-                    events.send(event).await.map_err(|_| ReqError::Failed)
-                }
-                .boxed()
+                async move { forward_chunk(&events, data, request.offset, request.mtu).await }
+                    .boxed()
             })),
             ..Default::default()
         }),
@@ -284,15 +307,7 @@ fn build_application(events: mpsc::Sender<BleEvent>) -> Application {
             read: true,
             fun: Box::new(move |request| {
                 let info = info.clone();
-                async move {
-                    // A read may ask for the value starting at an offset.
-                    let offset = usize::from(request.offset);
-                    if offset > info.len() {
-                        return Err(ReqError::InvalidOffset);
-                    }
-                    Ok(info[offset..].to_vec())
-                }
-                .boxed()
+                async move { read_from_offset(&info, request.offset) }.boxed()
             }),
             ..Default::default()
         }),
@@ -314,9 +329,51 @@ fn build_application(events: mpsc::Sender<BleEvent>) -> Application {
     }
 }
 
+/// What the write callback does: pass one chunk on to the event loop.
+async fn forward_chunk(
+    events: &mpsc::Sender<BleEvent>,
+    data: Vec<u8>,
+    offset: u16,
+    mtu: u16,
+) -> Result<(), ReqError> {
+    // We do our own chunking, so BLE "long writes" (which arrive with an
+    // offset) are not supported.
+    if offset != 0 {
+        return Err(ReqError::InvalidOffset);
+    }
+    // Fails only if the event loop has gone away.
+    events
+        .send(BleEvent::Chunk { data, mtu })
+        .await
+        .map_err(|_| ReqError::Failed)
+}
+
+/// What the read callback does: a phone with a small packet size reads a
+/// long value in pieces, each read starting at the offset it has reached.
+fn read_from_offset(value: &[u8], offset: u16) -> Result<Vec<u8>, ReqError> {
+    let offset = usize::from(offset);
+    if offset > value.len() {
+        return Err(ReqError::InvalidOffset);
+    }
+    Ok(value[offset..].to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::tests::test_app;
+    use crate::protocol::{CHUNK_FIRST, CHUNK_LAST};
+    use serde_json::Value;
+
+    /// Glue response chunks back together and parse the JSON.
+    fn reassemble(chunks: &[Vec<u8>]) -> Value {
+        let mut reassembler = Reassembler::new();
+        let mut message = None;
+        for chunk in chunks {
+            message = reassembler.push(chunk).unwrap();
+        }
+        serde_json::from_slice(&message.expect("incomplete response")).unwrap()
+    }
 
     #[test]
     fn uuids_match_the_documented_text_form() {
@@ -353,5 +410,165 @@ mod tests {
         assert!(service.characteristics[0].write.is_some());
         assert!(service.characteristics[1].notify.is_some());
         assert!(service.characteristics[2].read.is_some());
+    }
+
+    #[test]
+    fn response_chunks_fit_the_connection() {
+        // The BLE default MTU of 23 leaves 20 bytes.
+        assert_eq!(response_chunk_len(23), 20);
+        // A typical negotiated Android MTU.
+        assert_eq!(response_chunk_len(247), 244);
+        // The largest MTU (517) is capped by the 512-byte value limit.
+        assert_eq!(response_chunk_len(517), 512);
+        assert_eq!(response_chunk_len(u16::MAX), 512);
+        // Nonsense values fall back to the smallest size that always works.
+        assert_eq!(response_chunk_len(0), 20);
+        assert_eq!(response_chunk_len(5), 20);
+    }
+
+    #[tokio::test]
+    async fn a_write_reaches_the_event_loop_as_a_chunk() {
+        let (events, mut receiver) = mpsc::channel(4);
+
+        forward_chunk(&events, vec![0x03, b'{', b'}'], 0, 185)
+            .await
+            .unwrap();
+        match receiver.recv().await.unwrap() {
+            BleEvent::Chunk { data, mtu } => {
+                assert_eq!(data, vec![0x03, b'{', b'}']);
+                assert_eq!(mtu, 185);
+            }
+            BleEvent::Subscribed(_) => panic!("expected a chunk"),
+        }
+
+        // A "long write" (non-zero offset) is refused and forwards nothing.
+        let refused = forward_chunk(&events, vec![1, 2, 3], 18, 185).await;
+        assert!(matches!(refused, Err(ReqError::InvalidOffset)));
+        assert!(receiver.try_recv().is_err());
+
+        // If the event loop is gone, the phone is told the write failed.
+        drop(receiver);
+        let failed = forward_chunk(&events, vec![0x03], 0, 185).await;
+        assert!(matches!(failed, Err(ReqError::Failed)));
+    }
+
+    #[test]
+    fn a_value_can_be_read_from_any_offset() {
+        let value = b"0123456789";
+        assert_eq!(read_from_offset(value, 0).unwrap(), value);
+        assert_eq!(read_from_offset(value, 4).unwrap(), b"456789");
+        // Reading exactly at the end gives an empty rest, not an error.
+        assert_eq!(read_from_offset(value, 10).unwrap(), b"");
+        assert!(matches!(
+            read_from_offset(value, 11),
+            Err(ReqError::InvalidOffset)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_one_chunk_request_gets_a_response() {
+        let test = test_app();
+        let mut conversation = Conversation::new(Arc::clone(&test.app));
+
+        let mut chunk = vec![CHUNK_FIRST | CHUNK_LAST];
+        chunk.extend_from_slice(br#"{"v":1,"id":7,"op":"list"}"#);
+        let response = conversation.on_chunk(&chunk, 247).await.unwrap();
+
+        assert_eq!(response.len(), 1, "a short response is one notification");
+        let value = reassemble(&response);
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["id"], 7);
+        assert_eq!(value["alarms"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn a_whole_session_at_the_smallest_mtu() {
+        // The connect sequence from PROTOCOL.md, with every message cut into
+        // 20-byte chunks as on a connection that never negotiated an MTU.
+        let test = test_app();
+        let mut conversation = Conversation::new(Arc::clone(&test.app));
+        let requests = [
+            r#"{"v":1,"id":1,"op":"set_time","unix_ms":1794334050000,"utc_offset_min":-360}"#,
+            r#"{"v":1,"id":2,"op":"status"}"#,
+            r#"{"v":1,"id":3,"op":"put","alarm":{"id":"work","label":"Work","hour":6,"minute":30,"days":["mon","tue","wed","thu","fri"],"enabled":true,"steps":[{"offset_s":-600,"action":"light_toggle"},{"offset_s":0,"action":"fan_3"}]}}"#,
+            r#"{"v":1,"id":4,"op":"list"}"#,
+            r#"{"v":1,"id":5,"op":"action","name":"light_toggle"}"#,
+        ];
+
+        let mut responses = Vec::new();
+        for request in requests {
+            let chunks = chunk_message(request.as_bytes(), MIN_CHUNK_LEN);
+            let last = chunks.len() - 1;
+            for (index, chunk) in chunks.iter().enumerate() {
+                let out = conversation.on_chunk(chunk, 23).await.unwrap();
+                if index < last {
+                    assert!(out.is_empty(), "no response before the request is complete");
+                } else {
+                    // Every response chunk fits a 23-byte MTU.
+                    assert!(out.iter().all(|chunk| chunk.len() <= 20));
+                    responses.push(reassemble(&out));
+                }
+            }
+        }
+
+        assert_eq!(responses.len(), 5);
+        for (index, response) in responses.iter().enumerate() {
+            assert_eq!(response["ok"], true, "request {}: {response}", index + 1);
+            assert_eq!(response["id"], index + 1);
+        }
+        // set_time moved the mock clock (it was 7.5 minutes behind).
+        assert_eq!(responses[0]["adjusted"], true);
+        assert_eq!(test.clock.set_calls().len(), 1);
+        // status lists the three actions.
+        assert_eq!(responses[1]["actions"].as_array().unwrap().len(), 3);
+        // put stored the alarm and list returns it.
+        assert_eq!(responses[2]["created"], true);
+        assert_eq!(responses[3]["alarms"][0]["id"], "work");
+        // action transmitted on the (mock) radio.
+        assert_eq!(test.sent.count(), 1);
+    }
+
+    #[tokio::test]
+    async fn bad_chunks_are_ignored_and_the_conversation_recovers() {
+        let test = test_app();
+        let mut conversation = Conversation::new(Arc::clone(&test.app));
+
+        // An unknown header, an empty write, and a continuation with no start.
+        assert!(conversation
+            .on_chunk(&[0x80, 1], 23)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(conversation.on_chunk(&[], 23).await.unwrap().is_empty());
+        assert!(conversation
+            .on_chunk(&[0x00, 1], 23)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // Half a request, then the phone reconnects.
+        assert!(conversation
+            .on_chunk(&[CHUNK_FIRST, b'{', b'"'], 23)
+            .await
+            .unwrap()
+            .is_empty());
+        conversation.reset();
+
+        let mut chunk = vec![CHUNK_FIRST | CHUNK_LAST];
+        chunk.extend_from_slice(br#"{"v":1,"op":"list"}"#);
+        let response = conversation.on_chunk(&chunk, 23).await.unwrap();
+        assert_eq!(reassemble(&response)["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn invalid_json_still_gets_an_error_response() {
+        let test = test_app();
+        let mut conversation = Conversation::new(Arc::clone(&test.app));
+        let mut chunk = vec![CHUNK_FIRST | CHUNK_LAST];
+        chunk.extend_from_slice(b"this is not json");
+        let response = conversation.on_chunk(&chunk, 247).await.unwrap();
+        let value = reassemble(&response);
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "bad_json");
     }
 }

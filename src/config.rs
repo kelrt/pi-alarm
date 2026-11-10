@@ -257,6 +257,12 @@ impl Config {
                 }
             }
         }
+        // The scheduler runs a step when it is between 0 and `late_grace_secs`
+        // late, and it looks once a second. A tiny value would make it miss
+        // steps; zero would mean nothing ever runs.
+        if !(10..=3600).contains(&self.scheduler.late_grace_secs) {
+            bail!("[scheduler] late_grace_secs must be between 10 and 3600");
+        }
         if self.ble.device_name.is_empty() || self.ble.device_name.len() > 20 {
             bail!("[ble] device_name must be 1-20 characters");
         }
@@ -389,6 +395,8 @@ mod tests {
             "data_dir = \"d\"\n[actions.\"Fan 3\"]\nfile = \"x.sub\"\n",
             "data_dir = \"d\"\n[actions.fan_3]\nfile = \"x.sub\"\nrepeats = 500\n",
             "data_dir = \"d\"\n[ble]\ndevice_name = \"\"\n",
+            "data_dir = \"d\"\n[scheduler]\nlate_grace_secs = 0\n",
+            "data_dir = \"d\"\n[scheduler]\nlate_grace_secs = 86400\n",
             // data_dir is required
             "[radio]\nrepeats = 3\n",
         ];

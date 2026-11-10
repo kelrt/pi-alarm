@@ -499,17 +499,35 @@ const SPIN_MARGIN: Duration = Duration::from_millis(2);
 /// Toggle GDO0 following `pulses`, then leave it low.
 ///
 /// Linux is not a real-time system, and `thread::sleep` on a Pi Zero can
-/// easily be a millisecond late, which is longer than a whole bit. Two
+/// easily be a millisecond late, which is longer than a whole bit. Three
 /// things keep the timing usable:
 ///
 /// * **Busy-waiting.** For short pulses we spin in a loop reading the clock
 ///   and never give the CPU away.
-/// * **Absolute deadlines.** Each pulse ends at "start + sum of all pulses so
-///   far", not "now + this pulse". A late edge therefore does not push every
-///   later edge back; errors do not add up.
+/// * **Absolute deadlines.** Each pulse ends at "first edge + sum of all
+///   pulses so far", not "now + this pulse". A late edge therefore does not
+///   push every later edge back; errors do not add up.
+/// * **A warm-up.** The first time code runs it can be slow (it may have to
+///   be loaded from the SD card or into the CPU cache). So the same calls
+///   are made once before the clock starts, where a delay is harmless.
 fn play_pulses(io: &mut dyn Cc1101Io, pulses: &[Pulse]) {
-    let mut deadline = Instant::now();
-    for pulse in pulses {
+    // `split_first` gives the first pulse and a slice of the others.
+    let Some((first, rest)) = pulses.split_first() else {
+        return;
+    };
+
+    // Warm-up: the line is already low, and waiting for "now" returns at
+    // once. Neither changes anything on air.
+    io.gdo0_write(false);
+    wait_until(Instant::now());
+
+    // The clock starts when the first edge has been written, so a slow
+    // first write cannot shorten the first pulse.
+    io.gdo0_write(first.high);
+    let mut deadline = Instant::now() + Duration::from_micros(u64::from(first.micros));
+    wait_until(deadline);
+
+    for pulse in rest {
         io.gdo0_write(pulse.high);
         deadline += Duration::from_micros(u64::from(pulse.micros));
         wait_until(deadline);
@@ -846,10 +864,10 @@ mod tests {
         assert_eq!(chip.claims, 1);
         assert!(!chip.pin_claimed, "GDO0 must be released afterwards");
 
-        // The levels we asked for, then low twice: once at the end of the
-        // pulse list and once more during shutdown.
+        // One "low" for the warm-up, the four levels we asked for, then low
+        // twice: at the end of the pulse list and again during shutdown.
         let levels: Vec<bool> = chip.edges.iter().map(|edge| edge.1).collect();
-        assert_eq!(levels, vec![true, false, true, false, false, false]);
+        assert_eq!(levels, vec![false, true, false, true, false, false, false]);
         // Every "carrier on" write happened while the chip was transmitting.
         for (_, high, transmitting) in &chip.edges {
             if *high {
@@ -882,14 +900,15 @@ mod tests {
         radio.transmit(&transmission(pulses)).unwrap();
 
         let chip = shared.lock().unwrap();
-        let first = chip.edges[0].0;
-        // edges[6] is the "carrier off" write after the last pulse.
-        let total = chip.edges[6].0.duration_since(first);
-        // The driver starts its clock just before the first edge and the fake
-        // chip stamps the edge just after, so allow a hair under the total.
-        let measuring_slack = Duration::from_micros(100);
+        // edges[0] is the warm-up write, edges[1] the first real edge and
+        // edges[7] the "carrier off" write after the sixth and last pulse.
+        let first = chip.edges[1].0;
+        let total = chip.edges[7].0.duration_since(first);
+        // The driver starts its clock after writing the first edge and the
+        // fake chip stamps the edge while it is being written, so the burst
+        // can never measure shorter than requested.
         assert!(
-            total + measuring_slack >= Duration::from_micros(requested),
+            total >= Duration::from_micros(requested),
             "burst took {total:?}, requested {requested} us"
         );
         // Deadlines are absolute, so the whole burst must not run far over
@@ -898,6 +917,54 @@ mod tests {
             total < Duration::from_micros(requested) + Duration::from_millis(50),
             "burst took {total:?}"
         );
+    }
+
+    #[test]
+    fn a_slow_first_write_does_not_shorten_the_first_pulse() {
+        /// An io whose very first "carrier on" write takes a long time, as
+        /// the first run of any code can.
+        struct SlowStart {
+            edges: Vec<(Instant, bool)>,
+            delayed: bool,
+        }
+        impl Cc1101Io for SlowStart {
+            fn spi_transfer(&mut self, _write: &[u8], _read: &mut [u8]) -> anyhow::Result<()> {
+                Ok(())
+            }
+            fn gdo0_claim(&mut self) -> anyhow::Result<()> {
+                Ok(())
+            }
+            fn gdo0_write(&mut self, high: bool) {
+                self.edges.push((Instant::now(), high));
+                if high && !self.delayed {
+                    self.delayed = true;
+                    thread::sleep(Duration::from_millis(3));
+                }
+            }
+            fn gdo0_release(&mut self) {}
+        }
+
+        let mut io = SlowStart {
+            edges: Vec::new(),
+            delayed: false,
+        };
+        let pulses = [Pulse::high(1_000), Pulse::low(1_000), Pulse::high(1_000)];
+        play_pulses(&mut io, &pulses);
+
+        // edges: warm-up, on, off, on, final off.
+        assert_eq!(io.edges.len(), 5);
+        let first_pulse = io.edges[2].0.duration_since(io.edges[1].0);
+        assert!(
+            first_pulse >= Duration::from_micros(1_000),
+            "first pulse lasted only {first_pulse:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_pulse_list_writes_nothing() {
+        let (mut chip, shared) = fake_chip(0x14);
+        play_pulses(&mut chip, &[]);
+        assert!(shared.lock().unwrap().edges.is_empty());
     }
 
     #[test]

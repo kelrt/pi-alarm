@@ -27,9 +27,9 @@ are used as test fixtures.
 
 ## What works (run and checked here)
 
-- **182 automated tests pass**, with clippy clean: `.sub` parser, frame
-  extraction (against your three files), scheduler, DST, storage, protocol,
-  CLI.
+- **191 automated tests pass** on this PC, with clippy clean: `.sub` parser,
+  frame extraction (against your three files), scheduler, DST, storage,
+  protocol, BLE message handling, CLI.
 - **The daemon ran for real** with the mock radio: an alarm set a minute
   ahead fired both steps on the exact second and shut down cleanly.
 - **BLE service registers with BlueZ.** Checked on this PC's Bluetooth
@@ -37,8 +37,8 @@ are used as test fixtures.
 - **ARMv6 cross-compile works** for the target you named. See the caveat
   below.
 - **The ARM code runs on an emulated Pi Zero CPU** (`qemu-arm-static -cpu
-  arm1176`): all 182 tests pass, and the emulated daemon registered its BLE
-  service too.
+  arm1176`), with one caveat: the last fix was not re-run there. See
+  "Emulator log" below.
 
 ## What is mocked or unproven
 
@@ -51,6 +51,30 @@ are used as test fixtures.
 | Setting the clock | Logic tested with a fake clock. The real system call has never run (needs root). |
 | systemd unit | Written, never loaded. |
 | Recovery after BlueZ restarts | Written, could not be triggered here. |
+
+## Emulator log (stopped early at your request)
+
+Runs of a static ARMv6 build under `qemu-arm-static -cpu arm1176`, in order:
+
+| Run | Code state | Result |
+|---|---|---|
+| CLI: `--version`, `inspect`, `check`, `send` (mock) | commit `6aa84c3` + portable libc fix | all correct, same output as on the PC |
+| Full test suite | same | **182 of 182 passed** |
+| Daemon with BLE against this PC's BlueZ | same | service registered, clean shutdown |
+| Library tests, 3 runs | after the BLE refactor (170 tests) | 2 runs passed 170/170; **1 run failed 1 test** |
+| CLI tests | after the BLE refactor | **not re-run** (my loop picked the wrong file) |
+| Anything | after the timing fix below | **not run** |
+
+The one failure: `cc1101::tests::pulses_are_never_cut_short`, "burst took
+8.595268ms, requested 9000 us". Cause: the driver started its clock before
+writing the first edge, and under emulation that first write was slow, so
+the first pulse came out about 0.4 ms short. That can happen on a real Pi
+too. Fix, in the final commit: the clock starts once the first edge is
+written, and the calls are made once as a warm-up first. Two new tests cover
+it and pass on the PC. The fix has **not** been run under the emulator.
+
+**The ARM binaries in `target/` are older than the final code.** Rebuild
+with `./scripts/build-pi.sh` before copying anything to the Pi.
 
 ## Key decisions
 

@@ -3,7 +3,6 @@ name = "pi-alarm"
 version = "0.1.0"
 edition = "2021"
 description = "Bedroom wake-up alarm: replays ceiling fan/light remote signals with a CC1101, controlled over BLE"
-license = "MIT"
 publish = false
 
 [features]

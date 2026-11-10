@@ -58,6 +58,11 @@ are mostly slept so the single-core Zero is not frozen for the whole burst.
 Real-time priority (SCHED_FIFO) is requested per transmission and silently
 skipped if the process lacks CAP_SYS_NICE; the systemd unit grants it.
 
+Two refinements came out of running the tests on an emulated Pi Zero CPU,
+where the first GPIO write of a burst was slow and shortened the first
+pulse: the clock now starts when the first edge has been written, and the
+same calls are made once as a warm-up before the timed part begins.
+
 ### D8. A transmission is capped at 5 seconds
 Protects against a huge capture in `mode = "raw"` freezing the Pi at
 real-time priority. Constant `MAX_ON_AIR_MICROS` in `src/radio.rs`.
@@ -239,8 +244,9 @@ The build you asked for (`arm-unknown-linux-gnueabihf`) links against the
 Pi's glibc, which this machine does not have, so that binary could only be
 inspected. `qemu-arm-static` was already installed here, so I also built the
 same code for `arm-unknown-linux-musleabihf` (ARMv6, statically linked) and
-ran it with `-cpu arm1176`: the whole test suite passes, and the daemon
-registered its BLE service with this machine's BlueZ. That required a second
+ran it with `-cpu arm1176`: the whole test suite passed at that point (182
+tests), and the daemon registered its BLE service with this machine's BlueZ.
+Later emulator runs were cut short; HANDOFF.md has the exact log. That required a second
 `rustup target add` (under `~/.rustup`, like D29). It also made me fix two
 places where the code assumed glibc's struct layouts.
 
