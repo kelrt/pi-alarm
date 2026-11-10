@@ -5,11 +5,19 @@
 //! code as the program.
 //!
 //! Reading order for someone new to the code:
-//! `subfile` -> `signal` -> `transmitter` -> `cc1101` -> `config` -> `radio`.
+//!
+//! 1. Radio:  `subfile` -> `signal` -> `transmitter` -> `cc1101` -> `config`
+//!    -> `radio`
+//! 2. Alarms: `alarm` -> `store` -> `schedule` -> `scheduler` -> `clock`
 
+pub mod alarm;
 pub mod cc1101;
+pub mod clock;
 pub mod config;
 pub mod radio;
+pub mod schedule;
+pub mod scheduler;
 pub mod signal;
+pub mod store;
 pub mod subfile;
 pub mod transmitter;

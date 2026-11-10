@@ -66,3 +66,62 @@ real-time priority. Constant `MAX_ON_AIR_MICROS` in `src/radio.rs`.
 I do not know your time zone, so `timezone` is commented out in the example
 and the daemon falls back to the system zone. The phone app warns if the Pi's
 UTC offset differs from the phone's (see PROTOCOL.md, `set_time`).
+
+## Alarms and scheduling
+
+### D10. Alarm shape
+`id`, `label`, `hour`, `minute`, `days` (non-empty list of `mon`..`sun`),
+`enabled`, `steps` (each `offset_s` in seconds relative to the alarm time,
+plus an action name). Offsets are in seconds, not minutes, so "light on, fan
+30 seconds later" is possible; the app's editor works in minutes. Limits: 20
+alarms, 8 steps each, offsets within 6 hours either way.
+
+### D11. Alarm ids are chosen by the client, and saving is "put"
+The phone picks a random id and sends the whole alarm. Sending the same id
+again replaces the alarm. That makes retries harmless, which the app's
+offline queue depends on: a save that is sent twice has the same result as
+one sent once.
+
+### D12. No one-shot alarms
+Your brief describes alarms as time + days of week, so `days` must not be
+empty. A "tomorrow only" alarm is one of the suggested exercises in
+LEARNING.md.
+
+### D13. Days of week refer to the alarm time, not the step
+A Monday 00:05 alarm with a step at -10 min fires that step on Sunday at
+23:55. It is still Monday's alarm.
+
+### D14. Daylight saving
+- Spring forward: a time that does not exist that night (02:30) fires an hour
+  later on the new clock (03:30), once.
+- Fall back: a time that happens twice (01:30) fires at the first one only.
+Tested for the US, UK, Lord Howe Island's 30-minute shift, and a full-year
+"exactly once per day" check.
+
+### D15. Late steps: 5 minutes of grace, then skipped
+If a step could not run on time (daemon restarting, clock corrected), it
+still runs when it is under `late_grace_secs` (default 300) late. Anything
+older is skipped and logged as missed. This is what stops a clock that jumps
+forward by hours from firing a backlog of alarms at once.
+
+### D16. A step never runs twice for the same scheduled time
+The scheduler keeps a small record of what it has handed out and saves it to
+`scheduler-state.json`. That covers restarts, small backward clock steps (NTP)
+and a power cut that resets the clock to an earlier time. The one deliberate
+exception: if the clock is moved back by more than about 11 minutes *while the
+daemon is running*, the earlier firing is treated as having happened at a
+wrong time and the alarm runs again at the corrected time.
+
+### D17. Alarms fire even when the clock has not been confirmed
+After a power cut with no Wi-Fi and no phone connection, the Pi's clock is
+stale (Raspberry Pi OS restores the last saved time, so it is typically
+minutes to an hour behind). Alarms still fire by that clock, so they will be
+late by however far it is behind. The alternative was not firing at all, and
+late seemed better for a wake-up alarm. The status message reports
+`synced: false` in that state so the app can show it.
+
+### D18. Storage: JSON, atomic writes, a lock file
+`alarms.json` is written to a temporary file, flushed, then renamed into
+place, so a power cut cannot leave half a file. A lock file stops the daemon
+and the CLI from overwriting each other's changes. A damaged file is reported
+as an error and never overwritten.
