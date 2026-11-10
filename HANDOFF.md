@@ -89,7 +89,7 @@ All 35 are in [DECISIONS.md](DECISIONS.md). The ones most worth your eye:
 - **D29, D34** two Rust targets were added under `~/.rustup`; the build
   tools live in `.tools/` inside the project.
 
-## Questions for you
+## Questions for you (answered)
 
 1. **Does replaying the captures from the Flipper work** from where the Pi
    will sit? (HARDWARE.md step 1. Everything else assumes yes.)
@@ -97,23 +97,23 @@ All 35 are in [DECISIONS.md](DECISIONS.md). The ones most worth your eye:
 2. **Which CC1101 module do you have**, one sold for 433 MHz or for 315 MHz?
    A 433 MHz board works at 304 MHz with reduced range and needs a 23.5 cm
    wire antenna instead of its coil.
-        - answer: 
+        - answer: It's the standard Amazon module (defaults to 433 MHz with a 387–464 MHz band range, using the 23.5 cm wire antenna mod for 304.25 MHz).
 3. **What time zone should alarms use?** The daemon uses the Pi's system
    zone unless you set `timezone` in the config. This PC is on
    America/New_York; I did not assume the Pi is.
-        - answer: 
+        - answer: America/New_York
 4. **Is "no BLE pairing" acceptable for now?** Anyone in Bluetooth range who
    knew the protocol could toggle your light. Say the word and bonding is
    the next change.
-        - answer: 
+        - answer: Yes, open BLE is fine for now; we can add bonding later.
 5. **After a power cut with no Wi-Fi and no phone**, the Pi's clock is
    stale, so alarms fire late by however far it is behind. Would you prefer
    that (current), or no alarm at all until the clock is confirmed?
-        - answer: 
+        - answer: Keep the current behavior (fire late using the stale clock rather than skipping entirely).
 6. **Do you want one-shot ("tomorrow only") alarms?** Left out because the
    brief described alarms as time + days of week. It is exercise 4 in
    LEARNING.md if you want to build it.
-        - answer: 
+        - answer: No, daily/weekly recurring schedules are enough for now (will look at exercise 4 later if needed).
 
 ## Next steps, in order
 
