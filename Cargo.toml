@@ -1,0 +1,55 @@
+[package]
+name = "pi-alarm"
+version = "0.1.0"
+edition = "2021"
+description = "Bedroom wake-up alarm: replays ceiling fan/light remote signals with a CC1101, controlled over BLE"
+license = "MIT"
+publish = false
+
+[features]
+# `vendored-dbus` compiles libdbus from source and links it statically, so the
+# build needs no system packages (no libdbus-1-dev) on either the dev machine
+# or in a cross-compile. Turn it off with `--no-default-features` if you would
+# rather link the system libdbus.
+default = ["vendored-dbus"]
+vendored-dbus = ["dbus/vendored"]
+
+[dependencies]
+# Error handling: `anyhow` gives one easy error type with `.context(...)`.
+anyhow = "1"
+# Dates, times and time zones (the scheduler's DST logic lives on these).
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+chrono-tz = "0.10"
+iana-time-zone = "0.1"
+# Command line parsing.
+clap = { version = "4", features = ["derive"] }
+# Logging: `log` is the facade, `env_logger` prints to stderr (journald picks it up).
+log = "0.4"
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+# Config (TOML) and messages/persistence (JSON).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+# Raw Linux calls: setting the clock and the real-time thread priority.
+libc = "0.2"
+# Raspberry Pi SPI + GPIO. Compiles on any Linux, only *works* on a Pi.
+rppal = "0.22"
+# BlueZ (Linux Bluetooth) bindings for the BLE GATT server, and the async
+# runtime they need.
+bluer = { version = "0.17", features = ["bluetoothd"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "signal"] }
+futures = "0.3"
+# Not used directly: listed only so the `vendored-dbus` feature can switch on
+# the vendored build of the D-Bus library that `bluer` depends on.
+dbus = "0.9"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+# Small and fast enough for a Pi Zero W.
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

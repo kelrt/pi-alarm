@@ -1,0 +1,12 @@
+/target
+/.tools
+/dist
+*.swp
+# local runtime data when testing on the dev machine
+/local-data
+# Flutter build output (generated)
+/app/.dart_tool
+/app/build
+/app/.flutter-plugins
+/app/.flutter-plugins-dependencies
+/app/pubspec.lock
