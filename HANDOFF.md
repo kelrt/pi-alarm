@@ -93,7 +93,7 @@ All 35 are in [DECISIONS.md](DECISIONS.md). The ones most worth your eye:
 
 1. **Does replaying the captures from the Flipper work** from where the Pi
    will sit? (HARDWARE.md step 1. Everything else assumes yes.)
-        - answer: 
+        - answer: yes
 2. **Which CC1101 module do you have**, one sold for 433 MHz or for 315 MHz?
    A 433 MHz board works at 304 MHz with reduced range and needs a 23.5 cm
    wire antenna instead of its coil.
