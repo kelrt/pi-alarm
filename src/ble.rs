@@ -31,8 +31,8 @@ use bluer::gatt::local::{
     CharacteristicNotifyMethod, CharacteristicRead, CharacteristicWrite, CharacteristicWriteMethod,
     ReqError, Service,
 };
-use bluer::Uuid;
-use futures::FutureExt;
+use bluer::{SessionEvent, Uuid};
+use futures::{FutureExt, StreamExt};
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -121,13 +121,44 @@ async fn serve(app: Arc<App>, device_name: &str) -> anyhow::Result<()> {
         adapter.address().await?
     );
 
+    // BlueZ announces when an adapter appears or disappears. If that happens
+    // to the adapter we are using (bluetoothd was restarted or updated, for
+    // example), our service registration is gone with it. `Box::pin` puts
+    // the stream on the heap at a fixed address, which `next()` requires.
+    let adapter_name = adapter.name().to_string();
+    let mut adapter_changes = Box::pin(
+        session
+            .events()
+            .await
+            .context("cannot watch for Bluetooth adapter changes")?,
+    );
+
     let mut reassembler = Reassembler::new();
     // The current subscription, if the phone has one.
     let mut notifier: Option<CharacteristicNotifier> = None;
 
-    // `recv` waits for the next event. It returns `None` only when every
-    // sender is gone, which means the GATT application was torn down.
-    while let Some(event) = events_rx.recv().await {
+    loop {
+        // Wait for the next thing to happen: an event from the phone, or a
+        // change to the adapter.
+        let event = tokio::select! {
+            event = events_rx.recv() => match event {
+                Some(event) => event,
+                // Every sender is gone: the GATT application was torn down.
+                None => return Ok(()),
+            },
+            change = adapter_changes.next() => match change {
+                Some(SessionEvent::AdapterAdded(name)) | Some(SessionEvent::AdapterRemoved(name))
+                    if name == adapter_name =>
+                {
+                    // Returning an error makes `run` register everything
+                    // again after a short pause.
+                    anyhow::bail!("Bluetooth adapter {name} was reset");
+                }
+                Some(_) => continue, // some other adapter
+                None => anyhow::bail!("lost the connection to BlueZ"),
+            },
+        };
+
         match event {
             BleEvent::Subscribed(new_notifier) => {
                 log::info!("phone subscribed to responses");
@@ -158,7 +189,6 @@ async fn serve(app: Arc<App>, device_name: &str) -> anyhow::Result<()> {
             }
         }
     }
-    Ok(())
 }
 
 /// Send a response to the phone as one or more notifications.

@@ -206,3 +206,17 @@ it with `rustup target remove arm-unknown-linux-gnueabihf`.
 
 ### D30. The alarm delete command is `pi-alarm delete`, not `rm`
 Matches the protocol's `delete` op.
+
+### D31. The BLE server was smoke-tested on this computer's Bluetooth adapter
+To check that BlueZ accepts the GATT service, I ran the daemon here with the
+mock radio and BLE enabled, twice, for about 10 seconds each. During that
+time this PC advertised a BLE device named `pi-alarm`. The adapter was
+already powered on; its power, pairing and discoverable settings were not
+changed, and the registration was removed on exit (checked: active
+advertising instances back to 0).
+
+### D32. The BLE server re-registers if BlueZ resets the adapter
+If `bluetoothd` restarts (a package update, a crash), the GATT service
+registration disappears. The server watches for the adapter being removed or
+re-added and registers again after 10 seconds. This path is written but
+could not be exercised here, since restarting bluetoothd needs sudo.
