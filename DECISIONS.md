@@ -220,3 +220,16 @@ If `bluetoothd` restarts (a package update, a crash), the GATT service
 registration disappears. The server watches for the adapter being removed or
 re-added and registers again after 10 seconds. This path is written but
 could not be exercised here, since restarting bluetoothd needs sudo.
+
+### D33. Three fixes from a review pass over the untestable parts
+Found by rereading the code that cannot run until the hardware exists:
+
+- `pi-alarm send` (or `check --radio`) resets the CC1101 when it starts. Run
+  while the daemon was mid-transmission, that would have cut the transmission
+  off. Start-up now takes the same lock file a transmission holds.
+- GPIO settings survive the process. After a crash during a transmission the
+  Pi's GDO0 pin would have stayed an output. The driver now sets it back to
+  an input every time it starts.
+- The daemon noticed alarm-file changes by modification time alone, which
+  can be the same for two saves a few milliseconds apart. It now also
+  compares the file's length and inode number.

@@ -16,7 +16,7 @@ use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
 
 use pi_alarm::alarm::{is_valid_id, Alarm, Day, Step};
-use pi_alarm::app::{open_transmitter, App};
+use pi_alarm::app::{open_transmitter, App, RADIO_LOCK_FILE};
 use pi_alarm::config::Config;
 use pi_alarm::daemon;
 use pi_alarm::protocol::handle_request;
@@ -194,8 +194,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 );
             }
             let transmitter = open_transmitter(&config, cli.mock_radio)?;
-            let radio =
-                Radio::new(actions, transmitter).with_lock_file(config.data_dir.join("radio.lock"));
+            let radio = Radio::new(actions, transmitter)
+                .with_lock_file(config.data_dir.join(RADIO_LOCK_FILE));
             radio.send(&action)?;
             println!("sent {action}");
             Ok(())

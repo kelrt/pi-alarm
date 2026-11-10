@@ -13,6 +13,8 @@
 
 use std::fs::{self, File};
 use std::io::Write;
+// Brings `ino()` into scope: inode numbers exist on Unix-like systems only.
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -37,6 +39,19 @@ struct AlarmFile {
 pub struct AlarmStore {
     path: PathBuf,
     lock_path: PathBuf,
+}
+
+/// Identifies one version of the alarms file.
+///
+/// The modification time alone is not enough: its resolution can be several
+/// milliseconds, so two quick saves may carry the same time. Every save
+/// writes a *new* file and renames it into place (see `write_atomically`),
+/// so the inode number, the file's identity on disk, changes each time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStamp {
+    modified: SystemTime,
+    len: u64,
+    inode: u64,
 }
 
 /// Returned by `put` so callers can tell "created" from "replaced".
@@ -81,10 +96,15 @@ impl AlarmStore {
         Ok(file.alarms)
     }
 
-    /// When the file last changed, or `None` if it does not exist. The
-    /// daemon compares this to notice edits made by the CLI.
-    pub fn modified(&self) -> Option<SystemTime> {
-        fs::metadata(&self.path).ok()?.modified().ok()
+    /// A value that changes whenever the file is rewritten, or `None` if
+    /// the file does not exist. The daemon compares stamps to notice edits.
+    pub fn stamp(&self) -> Option<FileStamp> {
+        let metadata = fs::metadata(&self.path).ok()?;
+        Some(FileStamp {
+            modified: metadata.modified().ok()?,
+            len: metadata.len(),
+            inode: metadata.ino(),
+        })
     }
 
     /// Add an alarm, or replace the one with the same id.
@@ -183,7 +203,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = AlarmStore::new(dir.path());
         assert!(store.load().unwrap().is_empty());
-        assert!(store.modified().is_none());
+        assert!(store.stamp().is_none());
     }
 
     #[test]
@@ -198,7 +218,24 @@ mod tests {
         let store = AlarmStore::new(dir.path());
         let alarms = store.load().unwrap();
         assert_eq!(alarms, vec![sample_alarm("a"), sample_alarm("b")]);
-        assert!(store.modified().is_some());
+        assert!(store.stamp().is_some());
+    }
+
+    #[test]
+    fn every_save_changes_the_stamp_even_when_nothing_else_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AlarmStore::new(dir.path());
+        store.put(sample_alarm("a")).unwrap();
+        let mut previous = store.stamp().unwrap();
+        // Saving identical content back-to-back gives the same length and,
+        // quite possibly, the same modification time. The stamp must still
+        // differ, or the daemon could miss a change.
+        for _ in 0..20 {
+            store.put(sample_alarm("a")).unwrap();
+            let stamp = store.stamp().unwrap();
+            assert_ne!(stamp, previous);
+            previous = stamp;
+        }
     }
 
     #[test]

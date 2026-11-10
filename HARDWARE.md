@@ -70,15 +70,19 @@ Stop the service first if it is running, so only one program uses the radio:
 
 ```sh
 sudo systemctl stop pi-alarm      # skip if not installed yet
-pi-alarm send light_toggle
+sudo pi-alarm send light_toggle
 ```
 
 The light should toggle. Run it again to toggle it back. Then:
 
 ```sh
-pi-alarm send fan_3
-pi-alarm send fan_off
+sudo pi-alarm send fan_3
+sudo pi-alarm send fan_off
 ```
+
+`sudo` is there for timing: as root the program may raise its priority while
+it sends, exactly as the installed service does. It works without `sudo`
+too, with a warning and slightly less steady pulses.
 
 `light_toggle` is the best first test because you see the result at once.
 
@@ -90,9 +94,9 @@ Work down this list; the likely causes come first.
    range at 304 MHz. See "Antenna" below. For a first test, hold the Pi
    within a metre of the fan.
 2. **Timing.** Look at the program's output. If it warns
-   `real-time priority not available`, the pulses may be ragged. Run the
-   test as root once (`sudo pi-alarm send light_toggle`) to rule that out.
-   The installed service always has the priority.
+   `real-time priority not available`, the pulses may be ragged; run the
+   test with `sudo` as shown above. The installed service always has the
+   priority.
 3. **More repeats.** Set `repeats = 16` under `[radio]` in the config.
 4. **Compare signals** with step 4 below.
 

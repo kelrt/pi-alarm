@@ -247,7 +247,7 @@ impl Radio {
 
         // Held until the end of this function. Best effort: if the lock file
         // cannot be opened we transmit anyway.
-        let _process_lock = self.lock_path.as_deref().and_then(lock_file);
+        let _process_lock = self.lock_path.as_deref().and_then(lock_radio);
 
         let mut transmitter = self.transmitter.lock().unwrap();
         log::info!(
@@ -261,9 +261,14 @@ impl Radio {
     }
 }
 
-/// Take an exclusive lock on `path`, waiting if another process holds it.
-/// The lock is released when the returned `File` is dropped.
-fn lock_file(path: &Path) -> Option<File> {
+/// Take the cross-process radio lock, waiting if another pi-alarm process
+/// holds it. The lock is released when the returned `File` is dropped.
+///
+/// Whoever touches the CC1101 in a way that could disturb a transmission
+/// (sending, or resetting the chip at start-up) holds this lock meanwhile.
+/// Returns `None`, and logs why, if the lock file cannot be used; callers
+/// then carry on without it.
+pub fn lock_radio(path: &Path) -> Option<File> {
     // Opening read-only is enough for a lock and works even when the file
     // belongs to another user; create it only if it does not exist yet.
     let file = File::open(path).or_else(|_| File::create(path));

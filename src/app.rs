@@ -12,9 +12,13 @@ use chrono_tz::Tz;
 use crate::cc1101::{Cc1101, Cc1101Settings, PiIo};
 use crate::clock::{Clock, SystemClock};
 use crate::config::{Config, TransmitterKind};
-use crate::radio::{load_actions, Radio};
+use crate::radio::{load_actions, lock_radio, Radio};
 use crate::store::AlarmStore;
 use crate::transmitter::{MockTransmitter, Transmitter};
+
+/// Name of the lock file, in the data directory, that keeps two pi-alarm
+/// processes from using the radio at the same time.
+pub const RADIO_LOCK_FILE: &str = "radio.lock";
 
 pub struct App {
     pub store: AlarmStore,
@@ -37,7 +41,7 @@ impl App {
         let actions = load_actions(config)?;
         let transmitter = open_transmitter(config, force_mock)?;
         let radio =
-            Radio::new(actions, transmitter).with_lock_file(config.data_dir.join("radio.lock"));
+            Radio::new(actions, transmitter).with_lock_file(config.data_dir.join(RADIO_LOCK_FILE));
         Ok(App {
             store: AlarmStore::new(&config.data_dir),
             radio,
@@ -55,6 +59,11 @@ pub fn open_transmitter(config: &Config, force_mock: bool) -> anyhow::Result<Box
         log::warn!("using the MOCK transmitter: nothing will be sent over the air");
         return Ok(Box::new(MockTransmitter::new()));
     }
+
+    // Starting the driver resets the chip. If the daemon is transmitting at
+    // this very moment (we might be `pi-alarm send` run by hand), wait for it
+    // to finish first. The lock is released at the end of this function.
+    let _radio_lock = lock_radio(&config.data_dir.join(RADIO_LOCK_FILE));
 
     let wiring = &config.radio.cc1101;
     let io = PiIo::open(

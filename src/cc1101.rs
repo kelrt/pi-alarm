@@ -231,11 +231,19 @@ impl PiIo {
             )
         })?;
         let gpio = Gpio::new().context("cannot open the GPIO device")?;
-        // Check now that the pin exists and is free, so a bad pin number is
-        // reported at start-up and not at the first alarm. The pin is given
-        // back immediately because we must not drive it yet.
-        gpio.get(gdo0_gpio)
-            .with_context(|| format!("cannot use GPIO{gdo0_gpio} for GDO0"))?;
+        // Make our side of GDO0 an input, and leave it that way. This also
+        // reports a bad pin number at start-up instead of at the first
+        // alarm. Normally the pin already is an input; it matters after a
+        // crash in the middle of a transmission, which would have left the
+        // pin driving the line (GPIO settings outlive the process).
+        let mut pin = gpio
+            .get(gdo0_gpio)
+            .with_context(|| format!("cannot use GPIO{gdo0_gpio} for GDO0"))?
+            .into_input();
+        // By default rppal restores a pin's previous mode when the pin value
+        // is dropped, which here would undo what we just did.
+        pin.set_reset_on_drop(false);
+        drop(pin);
         Ok(PiIo {
             spi,
             gpio,

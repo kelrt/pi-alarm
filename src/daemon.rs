@@ -12,7 +12,7 @@
 //! worker thread via `spawn_blocking`.
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::Context;
 use chrono::Timelike;
@@ -24,6 +24,7 @@ use crate::app::App;
 use crate::ble;
 use crate::config::Config;
 use crate::scheduler::Scheduler;
+use crate::store::FileStamp;
 
 /// Pause between two steps that are due at the same moment, so the fan's
 /// receiver sees two separate button presses.
@@ -85,14 +86,15 @@ async fn run_scheduler(app: Arc<App>, shutdown: Arc<Notify>) {
     let mut scheduler =
         Scheduler::restore(app.tz, app.late_grace_secs, app.clock.now(), &app.data_dir);
     let mut alarms: Vec<Alarm> = Vec::new();
-    // The alarms file's modification time when we last read it. Starts as
-    // something no real file has, so the first pass always loads.
-    let mut loaded_stamp: Option<Option<SystemTime>> = None;
+    // The stamp of the alarms file when we last read it. The outer `Option`
+    // is `None` until the first load; the inner one is `None` when the file
+    // does not exist.
+    let mut loaded_stamp: Option<Option<FileStamp>> = None;
 
     loop {
         // Re-read the alarms if the file changed (the phone or the CLI
         // edited it).
-        let stamp = app.store.modified();
+        let stamp = app.store.stamp();
         if loaded_stamp != Some(stamp) {
             match app.store.load() {
                 Ok(list) => {
