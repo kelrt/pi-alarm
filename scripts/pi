@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# Work with the Pi over its USB cable (the "USB" port on the Pi, not "PWR IN").
+#
+#   scripts/pi connect     bring the USB link up and set the Pi's clock
+#   scripts/pi ssh [cmd]   open a shell on the Pi, or run one command there
+#   scripts/pi status      link, service, radio, Bluetooth, clock, next alarm
+#   scripts/pi logs        follow the alarm service's log (Ctrl-C to stop)
+#   scripts/pi reboot      restart the Pi and reconnect
+#   scripts/pi shutdown    switch the Pi off cleanly; says when to unplug
+#   scripts/pi deploy      build for the Pi, install the binary, restart the service
+#
+# Every command connects first if needed, so there is no order to remember:
+# plug the Pi in and run the command. If the Pi is still booting, it waits.
+#
+# Why "connect" waits: if the laptop sends anything in the first moments
+# after the Pi switches its USB network on, the Pi stops accepting data from
+# the laptop until it is power-cycled. So the laptop's connection is set not
+# to start by itself, and this script starts it once the Pi has settled.
+# One-time laptop setup is in BUILD.md ("Working with the Pi over USB").
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+PI_USER="${PI_USER:-relz}"
+PI_ADDR=10.12.194.1              # the Pi's fixed address on the USB link
+NM_CONN=pi-alarm-usb             # the laptop's NetworkManager connection
+USB_ID=2e8a:0013                 # "Raspberry Pi USB Gadget"
+SETTLE_SECS=20                   # quiet time after the Pi's side comes up
+SSH=(ssh -o HostKeyAlias=pi-alarm.local -o ConnectTimeout=6 "$PI_USER@$PI_ADDR")
+
+say() { printf '%s\n' "$*" >&2; }
+die() { say "error: $*"; exit 1; }
+
+# Print the laptop's network interface for the Pi, if it is plugged in.
+find_iface() {
+    local net dev
+    for net in /sys/class/net/*; do
+        dev=$(readlink -f "$net/device" 2>/dev/null) || continue
+        dev=${dev%/*}                       # the USB device above the interface
+        [ -r "$dev/idVendor" ] || continue
+        if [ "$(cat "$dev/idVendor"):$(cat "$dev/idProduct")" = "$USB_ID" ]; then
+            basename "$net"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Milliseconds since the Pi appeared on USB.
+usb_age_ms() {
+    local dev
+    dev=$(readlink -f "/sys/class/net/$1/device")
+    cat "${dev%/*}/power/connected_duration" 2>/dev/null || echo 0
+}
+
+link_active() {
+    [ "$(nmcli -g GENERAL.STATE device show "$1" 2>/dev/null | cut -d' ' -f1)" = 100 ]
+}
+
+reachable() { "${SSH[@]}" -o BatchMode=yes true 2>/dev/null; }
+
+connect() {
+    local iface waited=0
+    until iface=$(find_iface); do
+        [ "$waited" -eq 0 ] && say "Waiting for the Pi to appear on USB (plug it into its USB port)..."
+        [ "$waited" -ge 180 ] && die "the Pi did not appear on USB. Check the cable is a data cable and is in the Pi's USB port, not PWR IN."
+        sleep 2; waited=$((waited + 2))
+    done
+
+    if link_active "$iface" && reachable; then
+        return 0
+    fi
+
+    # The Pi switches its side on about 80 s after it appears on USB.
+    waited=0
+    until [ "$(cat "/sys/class/net/$iface/carrier" 2>/dev/null)" = 1 ]; do
+        [ "$waited" -eq 0 ] && say "The Pi is booting; waiting for it to switch its USB network on (about 1.5 minutes from power-on)..."
+        [ "$waited" -ge 300 ] && die "the Pi never switched its USB network on. Unplug it, plug it back in and try again."
+        sleep 2; waited=$((waited + 2))
+        [ -e "/sys/class/net/$iface" ] || { connect; return; }   # it re-appeared under a new name
+    done
+    # Stay quiet until the Pi has settled. A Pi that has been up for 5 minutes
+    # settled long ago.
+    if [ "$(usb_age_ms "$iface")" -lt 300000 ]; then
+        say "Giving the Pi $SETTLE_SECS seconds to settle..."
+        sleep "$SETTLE_SECS"
+    fi
+
+    nmcli connection up "$NM_CONN" ifname "$iface" >/dev/null \
+        || die "could not start the laptop's '$NM_CONN' connection. See BUILD.md, \"Working with the Pi over USB\"."
+
+    local try
+    for try in 1 2 3 4 5 6; do
+        if reachable; then
+            set_clock
+            say "Connected to the Pi."
+            return 0
+        fi
+        sleep 2
+    done
+    local errors
+    errors=$(cat "/sys/class/net/$iface/statistics/tx_errors" 2>/dev/null || echo 0)
+    if [ "$errors" -gt 0 ]; then
+        die "the Pi is not accepting data from the laptop ($errors send errors). This is the start-up timing problem: unplug the Pi, plug it back in, and run this again."
+    fi
+    die "the link is up but the Pi does not answer SSH. Is it still booting? Try again in a minute."
+}
+
+# The Pi has no battery clock. Give it the laptop's time if the laptop's own
+# clock is trustworthy and the Pi is off by 2 seconds or more.
+set_clock() {
+    [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = yes ] || return 0
+    local theirs ours delta
+    theirs=$("${SSH[@]}" date +%s) || return 0
+    ours=$(date +%s)
+    delta=$((ours - theirs))
+    if [ "${delta#-}" -ge 2 ]; then
+        "${SSH[@]}" "sudo date -s @$(date +%s) >/dev/null"
+        say "Set the Pi's clock (it was off by $delta s)."
+    fi
+}
+
+cmd_status() {
+    connect
+    "${SSH[@]}" '
+        echo "Pi time        $(date "+%a %d %b %H:%M:%S %Z")   (up $(uptime -p | sed "s/^up //"))"
+        echo "power          $(vcgencmd get_throttled | sed "s/throttled=0x0/ok/")"
+        echo "alarm service  $(systemctl is-active pi-alarm), starts on boot: $(systemctl is-enabled pi-alarm)"
+        echo "radio          $(journalctl -u pi-alarm -b -o cat --no-pager | grep -E "CC1101 (found|start-up failed)" | tail -1 | sed "s/^.*\] //")"
+        echo "bluetooth      $(journalctl -u pi-alarm -b -o cat --no-pager | grep -E "pi_alarm::ble" | tail -1 | sed "s/^.*\] //")"
+        echo "alarms"
+        pi-alarm list | sed "s/^/    /"
+        echo "next"
+        pi-alarm next 2>/dev/null | head -3 | sed "s/^/    /"
+    '
+}
+
+cmd_shutdown() {
+    connect
+    local iface
+    iface=$(find_iface)
+    "${SSH[@]}" 'sudo poweroff' 2>/dev/null || true
+    say "Shutting down..."
+    local waited=0
+    while [ -e "/sys/class/net/$iface" ] && [ "$waited" -lt 60 ]; do sleep 1; waited=$((waited + 1)); done
+    say "The Pi is off once its green light has stopped blinking and gone dark (about 10 seconds). Then it is safe to unplug."
+}
+
+cmd_reboot() {
+    connect
+    local iface
+    iface=$(find_iface)
+    "${SSH[@]}" 'sudo systemctl reboot' 2>/dev/null || true
+    say "Rebooting..."
+    local waited=0
+    while [ -e "/sys/class/net/$iface" ] && [ "$waited" -lt 60 ]; do sleep 1; waited=$((waited + 1)); done
+    connect
+}
+
+cmd_deploy() {
+    ./scripts/build-pi.sh
+    connect
+    scp -o HostKeyAlias=pi-alarm.local target/arm-unknown-linux-gnueabihf/release/pi-alarm "$PI_USER@$PI_ADDR:/tmp/pi-alarm.new"
+    "${SSH[@]}" 'sudo install -m 755 /tmp/pi-alarm.new /usr/local/bin/pi-alarm && rm /tmp/pi-alarm.new && sudo systemctl restart pi-alarm && pi-alarm --version && systemctl is-active pi-alarm'
+}
+
+case "${1:-}" in
+    connect)  connect ;;
+    ssh)      shift; connect; if [ $# -eq 0 ]; then exec "${SSH[@]}"; else exec "${SSH[@]}" "$@"; fi ;;
+    status)   cmd_status ;;
+    logs)     connect; exec "${SSH[@]}" -t 'journalctl -u pi-alarm -f -o cat' ;;
+    reboot)   cmd_reboot ;;
+    shutdown) cmd_shutdown ;;
+    deploy)   cmd_deploy ;;
+    *)        sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

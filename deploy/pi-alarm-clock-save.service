@@ -1,0 +1,13 @@
+# The Pi has no battery clock. After a power cut it starts from the time
+# stamped on /var/lib/systemd/timesync/clock, so stamp that file regularly:
+# the clock then comes back at most 10 minutes (plus the length of the power
+# cut) behind, and not hours or days behind.
+#
+# Install on the Pi with pi-alarm-clock-save.timer (see BUILD.md).
+
+[Unit]
+Description=pi-alarm: save the current time for the next boot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/touch /var/lib/systemd/timesync/clock

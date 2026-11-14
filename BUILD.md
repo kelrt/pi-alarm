@@ -148,7 +148,31 @@ stands for your user and host name.
 - Enable SPI (WIRING.md).
 - Set the time zone, because alarm times are in the Pi's zone:
   `sudo timedatectl set-timezone America/New_York` (use yours).
-- Bluetooth should already be running: `systemctl status bluetooth`.
+- Switch Bluetooth on. Raspberry Pi OS keeps the radios off until a Wi-Fi
+  country is set, and setting the country alone does not unblock Bluetooth:
+
+  ```sh
+  sudo raspi-config nonint do_wifi_country US     # use yours
+  for r in /sys/class/rfkill/rfkill*; do
+      [ "$(cat $r/type)" = bluetooth ] && echo 0 | sudo tee $r/soft
+  done
+  bluetoothctl show | grep Powered                # expect "Powered: yes"
+  ```
+
+  The setting survives reboots.
+- Install the small system files from `deploy/` (each file says in its first
+  lines what it is for):
+
+  | File | Goes to (on the Pi) |
+  |---|---|
+  | `bluetooth-pi-alarm.conf` | `/etc/systemd/system/bluetooth.service.d/pi-alarm.conf` |
+  | `pi-alarm-clock-save.service`, `.timer` | `/etc/systemd/system/` |
+  | `pi-alarm-journald.conf` | `/etc/systemd/journald.conf.d/99-pi-alarm-persistent.conf` |
+  | `pi-alarm-usb-gadget.conf` | `/etc/modprobe.d/` (only if you use the USB link below) |
+
+  Then `sudo systemctl daemon-reload`,
+  `sudo systemctl enable --now pi-alarm-clock-save.timer`,
+  `sudo systemctl restart bluetooth systemd-journald`.
 
 ### Copy the files
 
@@ -216,6 +240,62 @@ config; the service then logs what it would transmit.
 
 Rebuild, `scp` the binary, `sudo install` it again, and
 `sudo systemctl restart pi-alarm`. Alarms and config are untouched.
+
+### Working with the Pi over USB
+
+The Pi Zero W can only join 2.4 GHz Wi-Fi with WPA2. Without such a network,
+the way in is the USB cable: the Pi appears to the computer as a network
+adapter. Use a **data** cable in the Pi's port labelled **USB** (the middle
+one); that one cable also powers the Pi.
+
+Everything goes through one script, and there is no order to remember. Plug
+the Pi in and run a command; if the Pi is still booting, the script waits.
+
+```sh
+scripts/pi ssh            # a shell on the Pi
+scripts/pi ssh pi-alarm list
+scripts/pi status         # service, radio, Bluetooth, clock, next alarm
+scripts/pi logs           # follow the service log
+scripts/pi deploy         # build, install the new binary, restart the service
+scripts/pi reboot
+scripts/pi shutdown       # then unplug when the green light is dark
+```
+
+The script also sets the Pi's clock from the computer's each time it
+connects, because the Pi has no battery clock.
+
+**Unplugging.** Run `scripts/pi shutdown` first when you can. Pulling the
+cable without it has not caused a problem so far (alarms are saved in a way
+that survives a power cut), but a clean shutdown is the safe habit.
+
+**The one rule: do not let the computer connect by itself.** If the computer
+sends anything in the first moments after the Pi switches its USB network on
+(about 80 seconds after power-on), the Pi stops accepting data from the
+computer until it is unplugged and plugged back in. Seen 6 times out of 6
+with an automatic connection, never with the wait the script does. The
+symptom is a link that looks up but never gets an answer. So the computer's
+connection is created with `autoconnect no`, and `scripts/pi` starts it at
+the right moment. If you connect by hand (network menu) too early and it
+hangs: unplug the Pi, plug it back in, run `scripts/pi connect`.
+
+One-time setup:
+
+1. On the Pi: switch on Raspberry Pi OS's USB gadget mode. On this Pi it
+   was done at first boot by adding `rpi:` / `enable_usb_gadget: true` to
+   the `user-data` file on the SD card's boot partition. Then install
+   `deploy/pi-alarm-usb-gadget.conf` (table above) and reboot. The Pi is
+   then always `10.12.194.1` on the cable.
+2. On the computer (NetworkManager), create the connection the script uses.
+   It matches the Pi on any USB port, never starts by itself, and never
+   takes over the computer's internet:
+
+   ```sh
+   nmcli connection add type ethernet con-name pi-alarm-usb \
+       802-3-ethernet.mac-address 02:70:69:61:6C:02 \
+       connection.autoconnect no \
+       ipv4.method manual ipv4.addresses 10.12.194.2/28 ipv4.never-default yes \
+       ipv6.method disabled
+   ```
 
 ## 4. The phone app
 

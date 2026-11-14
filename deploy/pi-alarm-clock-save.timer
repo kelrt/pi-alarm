@@ -1,0 +1,10 @@
+[Unit]
+Description=pi-alarm: save the current time every 10 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
